@@ -2,12 +2,10 @@
   * Created by Administrator on 2017/3/2.
   */
 
-import org.apache.spark.SparkConf
-import org.apache.spark.ml.evaluation.RegressionEvaluator
-import org.apache.spark.ml.recommendation.ALS
-import org.apache.spark.sql.SparkSession
 import org.apache.spark.ml.recommendation.ALSModel
+import org.apache.spark.sql.SparkSession
 
+//
 object Recomm {
     case class Rating(userId: Int, itemId: Int, score: Int)
     def doRecomm() = {
