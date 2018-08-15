@@ -1,0 +1,392 @@
+消费者
+------------
+	Raw			--> 备份.
+	Cleaned		--> 清洗.
+
+HiveCleanedConsumer
+-------------------------
+	将清洗的数据不再放到hive下，而是放到外部的hdfs目录下。
+	修改rawPath路径为hdfs目录。
+	[93行]String rawPath = "/user/centos/eshop/cleaned/"+y+"/"+m+"/"+d+"/"+h+"/"+mi+"/"+hostname+".log";
+	
+
+hive清洗
+------------
+	select 
+
+hive
+--------------
+	
+	flume-ng agent -f /soft/flume/conf/eshop.conf -n a1 & 
+
+使用hive load hdfs上的清洗的数据。
+----------------------------------
+	1.动态添加表分区
+		alter table eshop.logs add partition(year=2017,month=3,day=2,hour=9,minute=28);
+
+	2.load数据到表中。
+		$hive>load data inpath '/user/centos/eshop/cleaned/2017/3/2/9/28' into table eshop.logs  partition(year=2017,month=3,day=2,hour=9,minute=28);
+
+	3.查询topN
+		$hive>select * from logs ;
+		s201    192.168.231.1   -       02/Mar/2017:09:28:58 +0800      GET /eshop/phone/mi.html HTTP/1.0       200     213    -ApacheBench/2.3 -       2017    3       2       9       28
+		//倒排序topN
+		$>select request,count(*) as c from logs where year = 2017 and month = 3 and day = 2 and hour = 9 and minute = 28 group by request order by c desc ;  
+	
+	
+	4.创建统计结果表
+		$hive>create table stats(request string,c int) row format DELIMITED FIELDS TERMINATED BY ',' LINES TERMINATED BY '\n' STORED AS TEXTFILE; 
+		$hive>insert into stats select request,count(*) as c from logs where year = 2017 and month = 3 and day = 2 and hour = 9 and minute = 28 group by request order by c desc ;  
+	
+	5.使用sqoop将hive中的数据导出到mysql
+		$>sqoop export --connect jdbc:mysql://192.168.231.1:3306/eshop --driver com.mysql.jdbc.Driver --username root --password root --table stats --columns request,c --export-dir hdfs://s201/user/hive/warehouse/eshop.db/stats
+			
+	6.将以上2-5部写成脚本,使用cron进行调度.
+		a.描述
+			每天的凌晨2点整,统计昨天的日志。
+		
+		b.创建hive脚本
+			[prestats.sh]s
+			#
+			#!/bin/bash
+			y=`date +%Y`
+			m=`date +%m`
+			d=`date -d "-1 day" +%d`
+
+			#添加分区
+			echo "alter table eshop.logs add partition(year=${y},month=${m},day=${d});" >> stat.ql
+
+			#加载数据放到分区
+			echo "load data inpath '/user/centos/eshop/cleaned/${y}/${m}/${d}' into table eshop.logs  partition(year=${y},month=${m},day=${d});" >> stat.ql
+
+			#统计数据，并将结果插入到stats表
+			echo "insert into stats select request,count(*) as c from logs where year = ${y} and month = ${m} and day = ${d} group by request order by c desc ;" >> stat.ql  
+		
+		c.创建bash脚本
+			1.创建准备脚本.创建hive脚本文件。
+				[/usr/local/bin/prestats.sh]
+				#!/bin/bash
+				y=`date +%Y`
+				m=`date +%m`
+				d=`date -d "-0 day" +%d`
+
+				m=$(( m+0 ))
+				d=$(( d+0 ))
+				#
+				rm -rf stat.ql
+
+				#添加分区
+				echo "alter table eshop.logs add if not exists partition(year=${y},month=${m},day=${d},hour=9,minute=28);" >> stat.ql
+
+				#加载数据放到分区
+				echo "load data inpath 'hdfs://s201/user/centos/eshop/cleaned/${y}/${m}/${d}/9/28' into table eshop.logs  partition(year=${y},month=${m},day=${d},hour=9,minute=28);" >> stat.ql
+
+				#统计数据，并将结果插入到stats表
+				echo "insert into eshop.stats select request,count(*) as c from eshop.logs where year = ${y} and month = ${m} and day = ${d} and hour=9 and minute = 28 group by request order by c desc ;" >> stat.ql
+
+			2.创建执行脚本
+				[/usr/local/bin/exestats.sh]
+				#!/bin/bash
+				./prestats.sh
+
+				#调用hive的ql脚本
+				hive -f stat.ql
+
+				#执行sqoop导出
+				sqoop export --connect jdbc:mysql://192.168.231.1:3306/eshop --driver com.mysql.jdbc.Driver --username root --password root --table stats --columns request,c --export-dir hdfs://s201/user/hive/warehouse/eshop.db/stats
+
+			3.修改所有权限
+				$>sudo chmod a+x /usr/local/bin/prestats.sh
+				$>sudo chmod a+x /usr/local/bin/exestats.sh
+
+
+JFreeChart
+-------------
+	1.pom.xml
+        <dependency>
+            <groupId>jfree</groupId>
+            <artifactId>jfreechart</artifactId>
+            <version>1.0.13</version>
+        </dependency>
+
+	2.使用JFreechart生成图片
+		package com.it18zhang.eshop.test;
+
+		import org.jfree.chart.ChartFactory;
+		import org.jfree.chart.ChartUtilities;
+		import org.jfree.chart.JFreeChart;
+		import org.jfree.chart.plot.PiePlot;
+		import org.jfree.chart.plot.PiePlot3D;
+		import org.jfree.data.general.DefaultPieDataset;
+		import org.jfree.data.general.PieDataset;
+		import org.junit.Test;
+
+		import java.awt.*;
+		import java.io.File;
+		import java.io.IOException;
+
+		/**
+		 * 测试饼图
+		 */
+		public class TestJfreechart {
+
+			@Test
+			public void pie() throws Exception {
+				File f = new File("d:/pie.png");
+
+				//数据集
+				DefaultPieDataset ds = new DefaultPieDataset();
+				ds.setValue("HuaWei",3000);
+				ds.setValue("Apple",5000);
+				ds.setValue("Mi",1890);
+
+				JFreeChart chart = ChartFactory.createPieChart("饼图演示", ds, false, false, false);
+
+				Font font = new Font("宋体",Font.BOLD,15);
+				chart.getTitle().setFont(font);
+				//背景透明
+
+				((PiePlot)chart.getPlot()).setForegroundAlpha(0.2f);
+				((PiePlot)chart.getPlot()).setExplodePercent("Apple",0.1f);
+				((PiePlot)chart.getPlot()).setExplodePercent("HuaWei",0.2f);
+				((PiePlot)chart.getPlot()).setExplodePercent("Mi",0.3f);
+
+
+				//创建3D饼图
+				ChartUtilities.saveChartAsJPEG(f, chart,400,300);
+			}
+		}
+
+推荐
+------------------------
+	1.设计用户商品表。
+		create table useritems(id int primary key auto_increment , userid int ,itemid int , score int, time timestamp);
+		
+	2.影射文件
+		UserItem.hbm.xml
+
+	3.Dao + Service
+	4.controller
+
+	5.spark部分
+		a)通过sqoop到处mysql数据到hdfs
+			$>
+sqoop import --connect jdbc:mysql://192.168.231.1:3306/eshop --driver com.mysql.jdbc.Driver --username root --password root --table useritems --columns userid,itemid,score -m 2 --target-dir eshop/recommends --check-column id --incremental append --last-value 0
+
+		b)启动spark集群
+		
+		e)启动spark-shell
+			$>spark-shell --master spark://s201:7077
+			
+			#内置SparkSession--spark
+			$scala>
+import org.apache.spark.ml.evaluation.RegressionEvaluator
+import org.apache.spark.ml.recommendation.ALS
+import spark.implicits._
+
+case class UserItem(userId: Int, itemId: Int, score : Int);
+
+def parseRating(str: String): UserItem = {
+val fields = str.split(",")
+UserItem(fields(0).toInt, fields(1).toInt, fields(2).toInt)
+}
+
+val useritems = spark.read.textFile("hdfs://s201/user/centos/eshop/recommends").map(parseRating).toDF()
+
+val test = spark.read.textFile("hdfs://s201/user/centos/eshop/recommends/testdata.txt").map(parseRating).toDF()
+val Array(training, test) = useritems.randomSplit(Array(0.8, 0.2))
+
+val als = new ALS()
+.setMaxIter(5)
+.setRegParam(0.01)
+.setUserCol("userId")
+.setItemCol("itemId")
+.setRatingCol("score")
+val model = als.fit(training)
+
+val predictions = model.transform(test)
+
+val evaluator = new RegressionEvaluator().setMetricName("rmse").setLabelCol("score").setPredictionCol("prediction")
+val rmse = evaluator.evaluate(predictions)
+println(s"Root-mean-square error = $rmse")
+spark.stop()
+
+
+
+//保存ALS模型
+model.save("hdfs://s201/user/centos/eshop/rec/model");			
+
+//加载模型
+import org.apache.spark.ml.recommendation.ALSModel;
+val model = ALSModel.load("hdfs://s201/user/centos/eshop/rec/model");
+val predictions = model.transform(test)
+
+
+
+
+
+
+
+
+
+
+
+
+
+		
+
+
+
+package org.apache.spark.examples.ml
+
+// $example on$
+import org.apache.spark.ml.evaluation.RegressionEvaluator
+import org.apache.spark.ml.recommendation.ALS
+// $example off$
+import org.apache.spark.sql.SparkSession
+
+/**
+ * An example demonstrating ALS.
+ * Run with
+ * {{{
+ * bin/run-example ml.ALSExample
+ * }}}
+ */
+object ALSExample {
+
+  // $example on$
+  case class Rating(userId: Int, movieId: Int, rating: Float, timestamp: Long)
+  def parseRating(str: String): Rating = {
+    val fields = str.split("::")
+    assert(fields.size == 4)
+    Rating(fields(0).toInt, fields(1).toInt, fields(2).toFloat, fields(3).toLong)
+  }
+  // $example off$
+
+  def main(args: Array[String]) {
+    val spark = SparkSession
+      .builder
+      .appName("ALSExample")
+      .getOrCreate()
+    import spark.implicits._
+
+    // $example on$
+    val ratings = spark.read.textFile("data/mllib/als/sample_movielens_ratings.txt")
+      .map(parseRating)
+      .toDF()
+    val Array(training, test) = ratings.randomSplit(Array(0.8, 0.2))
+
+    // Build the recommendation model using ALS on the training data
+    val als = new ALS()
+      .setMaxIter(5)
+      .setRegParam(0.01)
+      .setUserCol("userId")
+      .setItemCol("movieId")
+      .setRatingCol("rating")
+    val model = als.fit(training)
+
+    // Evaluate the model by computing the RMSE on the test data
+    val predictions = model.transform(test)
+
+    val evaluator = new RegressionEvaluator()
+      .setMetricName("rmse")
+      .setLabelCol("rating")
+      .setPredictionCol("prediction")
+    val rmse = evaluator.evaluate(predictions)
+    println(s"Root-mean-square error = $rmse")
+    // $example off$
+
+    spark.stop()
+  }
+}
+
+
+ALS
+--------
+	1.最小二乘法。
+	+----+--------+--------+-------+---------------------+
+	|  2 |      1 |      1 |     4 | 2017-03-02 16:16:46 |
+	|  3 |      1 |      2 |     5 | 2017-03-02 16:25:08 |
+	|  4 |      1 |      4 |     5 | 2017-03-02 16:25:17 |
+
+	|  5 |      2 |      1 |     5 | 2017-03-02 16:25:23 |
+	|  6 |      2 |      2 |     5 | 2017-03-02 16:25:26 |
+	|  7 |      2 |      3 |     5 | 2017-03-02 16:25:29 |
+	|  8 |      2 |      4 |     5 | 2017-03-02 16:25:31 |
+	|  9 |      2 |      5 |     5 | 2017-03-02 16:25:33 |
+
+	| 10 |      3 |      1 |     5 | 2017-03-02 16:25:39 |
+	| 11 |      3 |      2 |     5 | 2017-03-02 16:25:41 |
+	| 12 |      3 |      3 |     5 | 2017-03-02 16:25:43 |
+	| 13 |      3 |      4 |     5 | 2017-03-02 16:25:46 |
+	| 14 |      3 |      5 |     5 | 2017-03-02 16:25:48 |
+
+	| 15 |      4 |      1 |     5 | 2017-03-02 16:25:57 |
+	| 16 |      4 |      2 |     5 | 2017-03-02 16:25:58 |
+	| 17 |      4 |      3 |     5 | 2017-03-02 16:26:00 |
+	| 18 |      4 |      4 |     5 | 2017-03-02 16:26:02 |
+	| 19 |      4 |      5 |     5 | 2017-03-02 16:26:04 |
+
+	| 20 |      5 |      1 |     2 | 2017-03-02 16:26:12 |
+	| 21 |      5 |      2 |     1 | 2017-03-02 16:26:15 |
+	| 22 |      5 |      3 |     1 | 2017-03-02 16:26:19 |
+	| 23 |      5 |      4 |     1 | 2017-03-02 16:26:21 |
+	| 24 |      5 |      5 |     2 | 2017-03-02 16:26:25 |
+	+----+--------+--------+-------+---------------------+
+
+	2.jdbc.read.
+
+
+	3.启动spark集群
+		$>start-all.sh
+	
+	4.读取mysql数据
+		
+
+
++------+------+-----+
+|userId|itemId|score|
++------+------+-----+
+|     3|     4|    5|
+|     3|     5|    5|
+|     4|     1|    5|
+|     4|     2|    5|
+|     4|     3|    5|
+|     4|     4|    5|
+|     5|     1|    2|
+|     5|     2|    1|
+|     5|     3|    1|
+|     5|     4|    1|
+|     5|     5|    2|
+|     1|     1|    4|
+|     2|     1|    5|
+|     2|     2|    5|
+|     2|     3|    5|
+|     2|     4|    5|
+|     3|     1|    5|
+|     3|     2|    5|
++------+------+-----+
+
+
++------+------+-----+
+|userId|itemId|score|
++------+------+-----+
+|     4|     5|    5|
+|     1|     2|    5|
+|     1|     4|    5|
+|     2|     5|    5|
+|     3|     3|    5|
++------+------+-----+
+
+
++------+------+-----+----------+
+|userId|itemId|score|prediction|
++------+------+-----+----------+
+|     3|     3|    5|  1.851472|
+|     4|     5|    5| 1.4848356|
+|     2|     5|    5| 1.4848356|
+|     1|     4|    5| 3.9433975|
+|     1|     2|    5| 3.9433975|
++------+------+-----+----------+
+
+
